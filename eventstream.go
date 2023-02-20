@@ -18,7 +18,10 @@ package eventstream
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	validator "github.com/AccelByte/justice-input-validation-go"
+	"github.com/sirupsen/logrus"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -356,4 +359,232 @@ type Client interface {
 	Publish(publishBuilder *PublishBuilder) error
 	PublishSync(publishBuilder *PublishBuilder) error
 	Register(subscribeBuilder *SubscribeBuilder) error
+	PublishAuditLog(auditLogBuilder *AuditLogBuilder) error
+}
+
+type AuditLog struct {
+	ID              string           `json:"id,omitempty"`
+	Category        string           `json:"category,omitempty"`
+	ActionName      string           `json:"actionName,omitempty"`
+	Timestamp       int64            `json:"time,omitempty"`
+	IP              string           `json:"ip,omitempty"`
+	Actor           string           `json:"actor,omitempty"`
+	ActorType       string           `json:"actorType,omitempty"`
+	ClientID        string           `json:"clientId,omitempty"`
+	ActorNamespace  string           `json:"actorNamespace,omitempty"`
+	ObjectIDs       []string         `json:"objectIds,omitempty"`
+	ObjectNamespace string           `json:"objectNamespace,omitempty"`
+	TargetUserIDs   []string         `json:"targetUserIds,omitempty"`
+	DeviceID        string           `json:"deviceId,omitempty"`
+	Payload         *AuditLogPayload `json:"payload,omitempty"`
+}
+
+type EventBuilder interface {
+	Build() (kafka.Message, interface{}, error)
+	Validate() error
+	GetTopics() []string
+	GetEventName() string
+	GetContext() context.Context
+	GetErrorCallback() errorCallbackFunc
+}
+
+type errorCallbackFunc func(object interface{}, err error)
+
+type AuditLogBuilder struct {
+	topics          []string
+	eventName       string
+	category        string
+	actionName      string
+	ip              string
+	actor           string
+	actorType       string
+	clientID        string
+	actorNamespace  string
+	objectIDs       []string
+	objectNamespace string
+	targetUserIDs   []string
+	deviceID        string
+	content         interface{}
+	diff            interface{}
+
+	key           string
+	errorCallback errorCallbackFunc
+	ctx           context.Context
+}
+
+type AuditLogPayload struct {
+	Content interface{}
+	Diff    interface{}
+}
+
+func (auditLogBuilder *AuditLogBuilder) Topic(topics ...string) {
+	auditLogBuilder.topics = append(auditLogBuilder.topics, topics...)
+}
+
+func (auditLogBuilder *AuditLogBuilder) EventName(eventName string) {
+	auditLogBuilder.eventName = eventName
+}
+
+func (auditLogBuilder *AuditLogBuilder) Category(category string) {
+	auditLogBuilder.category = category
+}
+
+func (auditLogBuilder *AuditLogBuilder) ActionName(actionName string) {
+	auditLogBuilder.actionName = actionName
+}
+
+func (auditLogBuilder *AuditLogBuilder) IP(ip string) {
+	auditLogBuilder.ip = ip
+}
+
+func (auditLogBuilder *AuditLogBuilder) Actor(actor string) {
+	auditLogBuilder.actor = actor
+}
+
+func (auditLogBuilder *AuditLogBuilder) ActorType(actorType string) {
+	auditLogBuilder.actorType = actorType
+}
+
+func (auditLogBuilder *AuditLogBuilder) ClientID(clientID string) {
+	auditLogBuilder.clientID = clientID
+}
+
+func (auditLogBuilder *AuditLogBuilder) ActorNamespace(actorNamespace string) {
+	auditLogBuilder.actorNamespace = actorNamespace
+}
+
+func (auditLogBuilder *AuditLogBuilder) ObjectId(objectIDs ...string) {
+	auditLogBuilder.objectIDs = append(auditLogBuilder.objectIDs, objectIDs...)
+}
+
+func (auditLogBuilder *AuditLogBuilder) ObjectNamespace(objectNamespace string) {
+	auditLogBuilder.objectNamespace = objectNamespace
+}
+
+func (auditLogBuilder *AuditLogBuilder) TargetUserIDs(targetUserIDs ...string) {
+	auditLogBuilder.targetUserIDs = append(auditLogBuilder.targetUserIDs, targetUserIDs...)
+}
+
+func (auditLogBuilder *AuditLogBuilder) DeviceID(deviceID string) {
+	auditLogBuilder.deviceID = deviceID
+}
+
+func (auditLogBuilder *AuditLogBuilder) Content(content interface{}) {
+	auditLogBuilder.content = content
+}
+
+func (auditLogBuilder *AuditLogBuilder) Diff(diff interface{}) {
+	auditLogBuilder.diff = diff
+}
+
+func (auditLogBuilder *AuditLogBuilder) Validate() error {
+	if len(auditLogBuilder.topics) == 0 {
+		return errInvalidTopicEmpty
+	}
+	for _, topic := range auditLogBuilder.topics {
+		if topic == "" {
+			return errInvalidTopicEmpty
+		}
+
+		if valid := validateTopicEvent(topic); !valid {
+			return errInvalidTopicFormat
+		}
+	}
+
+	if auditLogBuilder.eventName == "" {
+		return errInvalidEventNameEmpty
+	}
+	if valid := validateTopicEvent(auditLogBuilder.eventName); !valid {
+		return errInvalidEventNameFormat
+	}
+	if auditLogBuilder.actor != "" && !validator.IsUUID4WithoutHyphens(auditLogBuilder.actor) {
+		return errInvalidActor
+	}
+	if auditLogBuilder.clientID != "" && !validator.IsUUID4WithoutHyphens(auditLogBuilder.clientID) {
+		return errInvalidClientID
+	}
+	if auditLogBuilder.objectNamespace == "" {
+		return errInvalidObjectNamespace
+	}
+	if len(auditLogBuilder.objectIDs) != 0 {
+		for _, objectID := range auditLogBuilder.objectIDs {
+			if !validator.IsUUID4WithoutHyphens(objectID) {
+				return errInvalidObjectID
+			}
+		}
+	}
+	if len(auditLogBuilder.targetUserIDs) != 0 {
+		for _, userID := range auditLogBuilder.targetUserIDs {
+			if !validator.IsUUID4WithoutHyphens(userID) {
+				return errInvalidTargetUserID
+			}
+		}
+	}
+	return nil
+}
+
+func (auditLogBuilder *AuditLogBuilder) Build() (kafka.Message, interface{}, error) {
+	id := generateID()
+	key := auditLogBuilder.key
+	if key == "" {
+		key = id
+	}
+	auditLog := &AuditLog{
+		ID:              id,
+		Category:        auditLogBuilder.category,
+		ActionName:      auditLogBuilder.actionName,
+		Timestamp:       time.Now().Unix(),
+		IP:              auditLogBuilder.ip,
+		Actor:           auditLogBuilder.actor,
+		ActorType:       auditLogBuilder.actorType,
+		ClientID:        auditLogBuilder.clientID,
+		ActorNamespace:  auditLogBuilder.actorNamespace,
+		ObjectIDs:       auditLogBuilder.objectIDs,
+		ObjectNamespace: auditLogBuilder.objectNamespace,
+		TargetUserIDs:   auditLogBuilder.targetUserIDs,
+		DeviceID:        auditLogBuilder.deviceID,
+	}
+	var content interface{}
+	if auditLogBuilder.content == nil {
+		content = make(map[string]interface{})
+	} else {
+		content = auditLogBuilder.content
+	}
+	var diff interface{}
+	if auditLogBuilder.diff == nil {
+		diff = make(map[string]interface{})
+	} else {
+		diff = auditLogBuilder.diff
+	}
+	payload := AuditLogPayload{
+		Content: content,
+		Diff:    diff,
+	}
+	auditLog.Payload = &payload
+
+	auditLogBytes, marshalErr := json.Marshal(auditLog)
+	if marshalErr != nil {
+		logrus.Errorf("unable to marshal audit log event: %s, error: %v", auditLog.ActionName, marshalErr)
+		return kafka.Message{}, auditLog, marshalErr
+	}
+	return kafka.Message{
+		Key:   []byte(key),
+		Value: auditLogBytes,
+	}, auditLog, nil
+}
+
+func (auditLogBuilder *AuditLogBuilder) GetTopics() []string {
+	return auditLogBuilder.topics
+}
+
+func (auditLogBuilder *AuditLogBuilder) GetEventName() string {
+	return auditLogBuilder.eventName
+}
+
+func (auditLogBuilder *AuditLogBuilder) GetContext() context.Context {
+	return auditLogBuilder.ctx
+}
+
+func (auditLogBuilder *AuditLogBuilder) GetErrorCallback() errorCallbackFunc {
+	return auditLogBuilder.errorCallback
 }

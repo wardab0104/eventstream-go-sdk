@@ -310,6 +310,74 @@ func (client *KafkaClient) publishEvent(ctx context.Context, topic, eventName st
 	return nil
 }
 
+// PublishAuditLog send an audit log event
+func (client *KafkaClient) PublishAuditLog(auditLogBuilder *AuditLogBuilder) error {
+	return client.PublishMessage(auditLogBuilder)
+}
+
+// PublishMessage send an event based on EventBuilder
+func (client *KafkaClient) PublishMessage(eventBuilder EventBuilder) error {
+	if eventBuilder == nil {
+		logrus.Error("failed to publish message: nil event")
+		return errPubNilEvent
+	}
+
+	err := eventBuilder.Validate()
+	if err != nil {
+		logrus.
+			WithField("Topic Name", eventBuilder.GetTopics()).
+			WithField("Event Name", eventBuilder.GetEventName()).
+			Error("incorrect publisher event: ", err)
+		return err
+	}
+
+	message, event, err := eventBuilder.Build()
+	if err != nil {
+		logrus.
+			WithField("Topic Name", eventBuilder.GetTopics()).
+			WithField("Event Name", eventBuilder.GetEventName()).
+			Error("unable to construct event: ", err)
+		return fmt.Errorf("unable to construct event : %s , error : %v", eventBuilder.GetEventName(), err)
+	}
+
+	config := client.publishConfig
+
+	for _, pubTopic := range eventBuilder.GetTopics() {
+		topic := constructTopic(client.prefix, pubTopic)
+
+		go func() {
+			err = backoff.RetryNotify(func() error {
+				return client.publishEvent(eventBuilder.GetContext(), topic, eventBuilder.GetEventName(), config, message)
+			}, backoff.WithMaxRetries(backoff.NewExponentialBackOff(), maxBackOffCount),
+				func(err error, _ time.Duration) {
+					logrus.
+						WithField("Topic Name", topic).
+						WithField("Event Name", eventBuilder.GetEventName()).
+						Warn("retrying publish event: ", err)
+				})
+			if err != nil {
+				logrus.
+					WithField("Topic Name", topic).
+					WithField("Event Name", eventBuilder.GetEventName()).
+					Error("giving up publishing event: ", err)
+
+				if eventBuilder.GetErrorCallback() != nil {
+					eventBuilder.GetErrorCallback()(event, err)
+				}
+
+				return
+			}
+
+			logrus.
+				WithField("Topic Name", topic).
+				WithField("Event Name", eventBuilder.GetEventName()).
+				Debug("successfully publish event")
+		}()
+	}
+
+	return nil
+}
+
 // ConstructEvent construct event message
 func ConstructEvent(publishBuilder *PublishBuilder) (kafka.Message, *Event, error) {
 	id := generateID()
@@ -361,7 +429,7 @@ func (client *KafkaClient) unregister(subscribeBuilder *SubscribeBuilder) {
 }
 
 // Register register callback function and then subscribe topic
-//nolint: gocognit,funlen
+// nolint: gocognit,funlen
 func (client *KafkaClient) Register(subscribeBuilder *SubscribeBuilder) error {
 	if subscribeBuilder == nil {
 		logrus.Error(errSubNilEvent)

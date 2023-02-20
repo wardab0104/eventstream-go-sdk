@@ -36,6 +36,12 @@ var (
 	errInvalidSessionID       = errors.New("sessionID isn't valid")
 	errInvalidTraceID         = errors.New("traceID isn't valid")
 	errInvalidCallback        = errors.New("callback should not be nil")
+	errInvalidTopicEmpty      = errors.New("topic can not be empty")
+	errInvalidEventNameEmpty  = errors.New("event name can not be empty")
+	errInvalidActor           = errors.New("actor isn't valid")
+	errInvalidObjectNamespace = errors.New("object namespace isn't valid")
+	errInvalidObjectID        = errors.New("invalid object id")
+	errInvalidTargetUserID    = errors.New("invalid target user id")
 )
 
 var topicRegex *regexp.Regexp = nil
